@@ -1,25 +1,27 @@
+import logging
 import os.path
 import pathlib
 import re
-import json
-import subprocess
 import time
 from threading import Thread
 
 from PyQt5.QtWidgets import QComboBox, QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
 from PyQt5.QtCore import Qt
 import sys
-from github import Github, GitRelease, GitReleaseAsset
+from github import Github, GitRelease
 from crumbs import Parameters
 from urllib import request
+from packaging import version
 
+logging.basicConfig()
+logger = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
     releases = {}
     github_client: Github
     current_index = None
     config = None
-    last_release_path = None
+    last_selected_release_path = None
     details_box: QLabel
 
     def __init__(self, title: str, config_parameters: Parameters):
@@ -33,15 +35,22 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(title)
 
-        self.last_release_path = os.path.realpath(os.path.join(self.config["release-dir"], "last-release"))
-        if os.path.exists(self.last_release_path):
-            with open(self.last_release_path, "r") as last:
+        # get the last launched release version
+        self.last_selected_release_path = os.path.realpath(os.path.join(self.config["release-dir"], "last-selected-release"))
+        if os.path.exists(self.last_selected_release_path):
+            with open(self.last_selected_release_path, "r") as last:
                 self.current_index = last.read()
 
 
+        if self.current_index is None:
+            self.current_index = list(self.get_releases().keys())[0]
+
+        # build release dropdown
         release_combobox = QComboBox()
         index = 0
-        for title, release in self.filter_releases(self.get_releases()).items():
+        releases = self.filter_releases(self.get_releases())
+        logger.debug("Filtered releases %s" % releases)
+        for title, release in releases.items():
             release_combobox.addItem(title, release.id)
 
             if title == self.current_index:
@@ -82,7 +91,7 @@ class MainWindow(QMainWindow):
         if len(self.releases.keys()) == 0:
             self.releases = {r.title.strip().lower().replace("ultimaker cura", "").strip(): r for r in self.github_client.get_repo("Ultimaker/Cura").get_releases()}
 
-            print("Found %d releases\n%s" % (len(self.releases.keys()), [r for r in self.releases.keys()]))
+            logger.debug("Found %d releases\n%s" % (len(self.releases.keys()), [r for r in self.releases.keys()]))
         return self.releases
 
     def select_release(self, index):
@@ -97,7 +106,7 @@ class MainWindow(QMainWindow):
         return {re.sub(sub_pattern, "", t): r for t, r in releases.items() if re.search(filter_pattern, t)}
 
     def filter_assets(self, assets, key: callable = lambda a: a.name):
-        print("Filtering %d assets\n%s" % (len(assets), [a.name for a in assets]))
+        logger.debug("Filtering %d assets\n%s" % (len(assets), [a.name for a in assets]))
         pattern = None
         if self.config["os-type"] == "linux":
             pattern = r'(\-linux)?\.AppImage$'
@@ -114,7 +123,7 @@ class MainWindow(QMainWindow):
 
     def download_asset(self, asset, file_path: pathlib.Path, launch: bool = False):
         self.update_status("Downloading...")
-        print("Downloading %s to %s" % (asset.browser_download_url, file_path))
+        logger.debug("Downloading %s to %s" % (asset.browser_download_url, file_path))
 
         with request.urlopen(asset.browser_download_url) as downloaded_file:
             with open(file_path, "wb") as local_file:
@@ -126,7 +135,7 @@ class MainWindow(QMainWindow):
             self.launch_file(file_path)
 
     def launch_file(self, file_path: pathlib.Path):
-        print("Launching %s" % file_path)
+        logger.debug("Launching %s" % file_path)
         self.update_status("Launching...")
 
         thread = Thread(target=os.system, args=["GDK_BACKEND=x11 %s" % file_path])
@@ -152,7 +161,7 @@ class MainWindow(QMainWindow):
         else:
             self.launch_file(file_path)
 
-        with open(self.last_release_path, "w") as last:
+        with open(self.last_selected_release_path, "w") as last:
             last.write(self.current_index)
 
     def update_details(self, release: GitRelease):
@@ -172,7 +181,7 @@ Assets:<br />
         self.details_box.setText(text)
 
     def update_status(self, status: str):
-        print("Setting status to %s" % status)
+        logger.debug("Setting status to %s" % status)
         self.status_box.setText(status)
         self.status_box.repaint()
 
@@ -185,9 +194,17 @@ if __name__ == '__main__':
 
     parameters = Parameters()
     parameters.add_parameter(options=["--release-dir"], default=".cura_launcher")
-    parameters.add_parameter(options=["--github-token"])
+    parameters.add_parameter(options=["--github-token"], required=True)
+    parameters.add_parameter(options=["--log-level"], default="INFO", only=list(logging._nameToLevel.keys()))
     parameters.add_parameter(options=["--os-type"], default="linux", only=["linux", "mac", "windows"])
     parameters.parse()
+
+    logger.setLevel(parameters["log_level"].upper())
+    logger.debug(f"{parameters=}")
+
+    if parameters["github-token"] is None:
+        logger.error("--github-token is required")
+        sys.exit(1)
 
     w = MainWindow("Ultimaker Cura Launcher", parameters)
     w.show()
