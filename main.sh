@@ -1,3 +1,5 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
-python3 /home/daniel/Projects/cura-launcher/main.py --github-token=[personal_access_token]
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
+
+python3 $SCRIPT_DIR/main.py --github-token=[personal_access_token]
